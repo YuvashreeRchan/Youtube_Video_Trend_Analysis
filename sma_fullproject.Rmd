@@ -1,0 +1,643 @@
+---
+title: "sma"
+output: html_document
+date: "2023-02-16"
+---
+## Load the libraries
+
+Library list: 
+
+```{r libraries_list}
+library(readr)
+library(rjson)
+library(janitor)
+library(assertr)
+library(tidyverse)
+library(lubridate)
+library(glue)
+library(scales)
+library(dplyr)
+```
+
+## Load data
+```{r}
+getwd()
+```
+
+Now we can import the dataset and clean the names first.
+
+```{r import data}
+USvideos <- read_csv("C:/Users/yuva/Downloads/USvideos.csv") %>%
+  clean_names()
+USvideos
+```
+```{r}
+colnames(USvideos)
+```
+```{r}
+dim(USvideos)
+```
+Now import the category name from JSON file.
+
+```{r}
+category_id = fromJSON(file = "C:/Users/yuva/Downloads/US_category_id.json",  unexpected.escape = "error")
+```
+
+```{r overview}
+dim(USvideos)
+str(USvideos)
+```
+## Assert outlier
+
+Now we need to make sure is there any outlier or mistake in the dataset.
+
+### Assert category_id
+
+First, test the column called "category_id". There are 43 categories, therefore the values in the column should not be bigger than 43 or smaller than 1.
+
+```{r}
+unique(USvideos$category_id)
+```
+
+```{r assert category}
+assert(data = USvideos, in_set(1, 43, allow.na = FALSE), category_id) 
+```
+
+There are 5 rows have *NA* in this column, we can just remove them later.
+
+### Assert numerical columns
+
+For the numerical columns in the dataset, based on the reality, all of them should be positive.
+
+```{r assert positive number}
+assert(data = USvideos, within_bounds(lower.bound = 0, upper.bound = Inf, allow.na = FALSE), views)
+assert(data = USvideos, within_bounds(lower.bound = 0,upper.bound = Inf, allow.na = FALSE), likes)
+assert(data = USvideos, within_bounds(lower.bound = 0, upper.bound = Inf, allow.na = FALSE), dislikes)
+assert(data = USvideos, within_bounds(lower.bound = 0, upper.bound = Inf, allow.na = FALSE), comment_count)
+```
+
+Fortunately, all of the numbers are positive. There is no mistake.
+
+### Assert logical columns
+
+And for the logical columns, all of the values should be TRUE or FALSE.
+
+```{r assert logical}
+assert(data = USvideos, in_set(TRUE, FALSE, allow.na = FALSE), comments_disabled)
+assert(data = USvideos, in_set(TRUE, FALSE, allow.na = FALSE), ratings_disabled)
+assert(data = USvideos, in_set(TRUE, FALSE, allow.na = FALSE), video_error_or_removed) 
+```
+And there is no error too.
+
+## Clean the data. 
+
+### Remove *NA*
+
+Because there are only several observations with NA values, we can just remove all of the rows which have NA value.
+
+```{r remove NA}
+USvideos_NNA <- as.data.frame(na.omit(USvideos))
+USvideos_NNA
+```
+```{r}
+dim(USvideos_NNA)
+```
+
+### Convert date column
+
+Then we need to convert the column called "trending_date" with character type to normal date format in "lubridate" package.
+
+```{r comvert to lubridate}
+USvideos_NNA <- USvideos_NNA %>%
+  mutate(trending_date = ydm(trending_date))
+```
+
+## Result overview
+
+Now let's look through the structure of dataset again.
+```{r result overview}
+str(USvideos_NNA)
+```
+
+## Create functions
+
+### Get date point
+
+Create a function for spliting the trending date column into 3 columns. And in this part, we can verify the column type first to make sure it's date type or not. If it isn't a date type column, the function will stop and return "Not a date format, please use 'lubridate' package."
+
+```{r get_day_point}
+
+get_day_point <- function(df, day_column)
+  {
+
+  if(class(df[[day_column]])=="Date"){
+    print("Date format check done.")
+  }else{
+      stop("Not a date format, please use 'lubridate' package.")
+  }
+
+  df %>%
+    mutate_at(day_column, list(date_year=year, 
+                               date_month=month, 
+                               date_day=day)) 
+}
+```
+
+
+```{r get_day_point test}
+get_day_point(USvideos_NNA, "trending_date")%>%
+  select(date_year,date_month,date_day)
+```
+##Get time point
+
+And for the column called “publish_time”, we can split it into 6 columns. The type is “POSIXct”, what is different with the last one. And this function will test the type first too. Different pulish time will influence the attention obviously, as a result, a video published in right time will get the more views in the beginning.
+
+```{r}
+get_time_point <- function(df, time_column){
+
+  if(class(df[[time_column]])[1]=="POSIXct"){
+    print("Timeformat check done.")
+  }else{
+      stop("Not a time format, please use 'lubridate' package.")
+  }
+  df %>%
+    mutate_at(time_column, list(time_year=year, 
+                                time_month=month, 
+                                time_day=day, 
+                                time_hour=hour, 
+                                time_minute=minute, 
+                                time_second=second)) 
+}
+```
+
+```{r}
+get_time_point(USvideos_NNA, "publish_time") %>%
+select(time_year,time_month,time_day,time_hour,time_minute,time_second)
+```
+
+##Get week day
+
+Definitely, the weekday will influence the views of videos in the first several publish day.
+
+```{r}
+get_weekday <- function(df, time_column){
+
+  df %>%
+    mutate(weekday=weekdays.POSIXt({{time_column}})) 
+}
+```
+
+
+```{r}
+get_weekday(USvideos_NNA, publish_time) %>%
+  select(publish_time, weekday)
+```
+
+
+##Count rows
+
+Now we will create a function to count the number of rows in decription column. The pattern of Line break symbol is “\n”. Count the number of “\n” and plus 1, the result should be the the number of row.
+
+```{r}
+count_rows <- function(df, chr_column){
+  
+  df %>%
+    mutate(chr_row_num = stringr::str_count({{chr_column}}, pattern = fixed("\\n")) + 1)
+}
+```
+
+```{r}
+count_rows(USvideos_NNA, description) %>%
+  select(description,chr_row_num)
+```
+
+##Count pattern
+
+This function is similar to the last one but it is used to count the number of tags. And the dataset use “|” to split the tags. So the number of tags should be the number of “|” plus 1.
+
+```{r}
+count_pattern <- function(df, tag_column){
+  
+  df %>%
+    mutate(pattern_num = stringr::str_count({{tag_column}}, pattern = fixed('"|"')) + 1)
+}
+```
+
+
+```{r}
+count_pattern(USvideos_NNA, tags) %>%
+  select(tags,pattern_num)
+```
+
+##Count uppercase
+
+Uppercase can catch viewers attention sometimes, therefore, it might influence the result.
+
+```{r}
+count_uppercase <- function(df, chr_column){
+  
+  df %>%
+    mutate(chr_upper_num = stringr::str_count({{chr_column}}, pattern = "[A-Z]" ))
+}
+```
+
+```{r}
+count_uppercase(USvideos_NNA, title) %>%
+  select(title, chr_upper_num)
+```
+
+##Count symbol
+
+Similar to the uppercase letter, the patterns like “?” and “!” might influence the viewers’ attention too.
+
+
+```{r}
+count_symbol <- function(df, chr_column){
+  
+  df %>%
+    mutate(chr_symbol_num = stringr::str_count({{chr_column}}, pattern = "[?!]")) 
+}
+```
+
+```{r}
+count_symbol(USvideos_NNA, title) %>%
+  select(title, chr_symbol_num)
+```
+
+##Get character length
+
+The length of title might influence the result too. Therefore we could create a funcion to calculate the length of character column. Of course, this function could be used to calculate the length of description column too.
+
+```{r}
+get_chr_length <- function(df, chr_column){
+  
+  df %>%
+    mutate(chr_length = stringr::str_length({{chr_column}}))
+}
+```
+
+```{r}
+get_chr_length(USvideos_NNA, title) %>%
+  select(title,chr_length)
+```
+##Get ratio
+
+Sometimes we might need calculate the ratio between 2 variables. This function can help us to get the ratio column.For example, the ratio between likes and dislikes will show us the controversy about the video.
+```{r}
+get_ratio <- function(df, numerator, denominator){
+  
+  df %>%
+    mutate(likes_rate = {{numerator}}/({{denominator}}))
+}
+```
+
+```{r}
+get_ratio(USvideos_NNA, likes, dislikes) %>%
+  select(likes,dislikes,likes_rate)
+```
+##Convert logical to 0/1
+
+Because there are some logical columns in our dataset, but if we want to use machine learning to predict the trending video, it will be easier when we convert them from TRUE/FALSE into 1/0.
+
+```{r}
+convert_to_01 <- function(df, comments_disabled_logi, ratings_disabled_logi, video_error_removed_logi){
+  
+  df %>% 
+    mutate( comments_disabled = case_when({{comments_disabled_logi}}==TRUE ~ 1,
+                                          {{comments_disabled_logi}}==FALSE ~ 0)) %>%
+    mutate( ratings_disabled = case_when({{ratings_disabled_logi}}==TRUE ~ 1,
+                                         {{ratings_disabled_logi}}==FALSE ~ 0)) %>%
+    mutate( video_error_or_removed = case_when({{video_error_removed_logi}}==TRUE ~ 1,
+                                               {{video_error_removed_logi}}==FALSE ~ 0)) 
+}
+```
+
+
+```{r}
+convert_to_01(USvideos_NNA, comments_disabled, ratings_disabled, video_error_or_removed) %>%
+  select(comments_disabled,ratings_disabled,video_error_or_removed)
+```
+
+#Class the trending
+
+For creating the machine learning model easier, we can just label the videos by views number, so label them as 4 levels. The watershed should be quantile 25 and median and quantile 75.
+
+```{r}
+class_level <- function(df, column){
+
+  df %>%
+    mutate( level= case_when({{column}} < quantile({{column}}, 0.25)[[1]] ~ "level1",
+                             {{column}} >= quantile({{column}}, 0.25)[[1]] & {{column}} < median({{column}}) ~ "level2",
+                             {{column}} >= median({{column}}) & {{column}} < quantile({{column}}, 0.75)[[1]] ~ "level3",
+                             {{column}} >= quantile({{column}}, 0.75)[[1]] ~ "level4"
+                             ))
+}
+```
+
+```{r}
+class_level(USvideos_NNA, views) %>%
+  select(views,level)
+```
+
+
+
+Now use the functions we defined before to complish the feature engineering.
+
+```{r}
+USvideos_NNA <- class_level(USvideos_NNA, views)
+USvideos_NNA <- get_ratio(USvideos_NNA, likes, dislikes)
+USvideos_NNA <- get_day_point(USvideos_NNA, "trending_date")
+```
+```{r}
+USvideos_NNA <- get_time_point(USvideos_NNA, "publish_time")
+```
+```{r}
+USvideos_NNA <- get_weekday(USvideos_NNA, publish_time)
+USvideos_NNA <- count_rows(USvideos_NNA, description)
+USvideos_NNA <- count_pattern(USvideos_NNA, tags)
+USvideos_NNA <- get_chr_length(USvideos_NNA, title)
+USvideos_NNA <- count_uppercase(USvideos_NNA, title)
+USvideos_NNA <- count_symbol(USvideos_NNA, title) 
+USvideos_NNA <- convert_to_01(USvideos_NNA, comments_disabled, ratings_disabled, video_error_or_removed)
+```
+
+```{r}
+head(USvideos_NNA)
+```
+Save the data
+```{r}
+USvideos_NNA %>%
+  select(views, likes, dislikes, comment_count, everything()) %>%
+  write_csv("data/USvideos_eda.csv")
+```
+
+
+```{r}
+USvideos_NNA %>%
+  ggplot()+
+  geom_density(aes(x=views, y=stat(density)),fill="#F7000B", color=NA, alpha=0.7) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  ) +
+  scale_x_log10(labels = comma) +
+  labs(x = "View Count")
+```
+
+```{r}
+USvideos_NNA %>%
+  ggplot()+
+  #geom_histogram(aes(x=views, y=stat(density)),binwidth=0.1) +
+  geom_density(aes(x=likes, y=stat(density)),fill="#F7000B", color=NA,alpha=0.7) +
+  geom_density(aes(x=dislikes, y=stat(density)),fill="black", color=NA,alpha=0.7) +
+  scale_x_log10(labels = comma) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )+
+  labs(x = "Like and Dislike Count")
+```
+```{r}
+USvideos_NNA %>%
+  ggplot()+
+  geom_density(aes(x=comment_count, y=stat(density)),fill="#F7000B", color=NA, alpha=0.7) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  ) +
+  scale_x_log10(labels = comma) 
+```
+
+
+
+```{r}
+USvideos_NNA %>%
+  mutate(category_id=as.character(category_id)) %>%
+  group_by(category_id) %>%
+  mutate(num=n()) %>%
+  ungroup() %>% 
+  ggplot() +
+  geom_col(aes(x=category_id, y=num),fill="#F7000B") +
+  geom_jitter(aes(x= category_id, y= views),size=0.2,color="black",width = 0.25) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  ) +
+  scale_x_discrete(labels = c("Film & Animation", "Music", "Pets & Animals", "Sports", "Travel & Events", "Autos & Vehicles", "Gaming", "People & Blogs", "Comedy", "Entertainment", "News & Politics", "Howto & Style", "Education","Science & Technology","Nonprofit", "Shows"))+
+  scale_y_continuous(labels = comma)+
+  coord_flip()
+
+```
+
+
+```{r}
+USvideos_NNA %>%
+  mutate(weekday_num=case_when(weekday=="Monday" ~ 1,
+                               weekday=="Tuesday" ~ 2,
+                               weekday=="Wednesday" ~ 3,
+                               weekday=="Thursday" ~ 4,
+                               weekday=="Friday" ~ 5,
+                               weekday=="Saturday" ~ 6,
+                               weekday=="Sunday" ~ 7)) %>%
+  mutate(weekday_num=as.factor(weekday_num)) %>%
+  group_by(weekday_num) %>%
+  mutate(num=n()) %>%
+  ggplot(aes(x=weekday_num)) +
+  geom_col(aes(y=num),fill="#F7000B") +
+  geom_jitter(aes(y= views),size=0.2,color="black") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )+
+  scale_y_continuous(labels = comma)+
+  scale_x_discrete(labels=c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"))+
+  coord_flip()
+
+```
+
+
+```{r}
+colnames(USvideos_NNA)
+```
+
+
+```{r}
+USvideos_NNA %>%
+  mutate(time_month=as.factor(time_month)) %>%
+  group_by(time_month) %>%
+  arrange(time_month) %>% 
+  mutate(num=n()) %>%
+  ggplot() +
+  geom_col(aes(x=time_month, y=num),fill="#F7000B") +
+  geom_jitter(aes(x= time_month, y= views),size=0.2, alpha=0.7,width = 0.3) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )+
+  scale_y_continuous(labels = comma) +
+  scale_x_discrete(labels = c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")) +
+  coord_flip()
+
+```
+
+
+```{r}
+USvideos_NNA %>%
+  mutate(time_hour=as.factor(time_hour)) %>%
+  group_by(time_hour) %>%
+  mutate(num=n()) %>%
+  ggplot() +
+  #geom_jitter(aes(x= time_hour, y= views),size=0.2,alpha=0.7) +
+  geom_col(aes(x=time_hour, y=num),fill="#F7000B") +  
+  scale_y_continuous(labels = comma)+
+  scale_x_discrete(labels = c(19,20,21,22,23,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  mutate(time_hour=as.factor(time_hour)) %>%
+  ggplot()+
+  geom_jitter(aes(x= time_hour, y= views),size=0.2, alpha=0.7) +
+  scale_y_continuous(labels = comma)+
+  scale_x_discrete(labels = c(19,20,21,22,23,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18)) +
+
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  group_by(chr_row_num) %>%
+  mutate(num=n()) %>%
+  ggplot()+
+  geom_line(aes(x=chr_row_num,y=num),linewidth=1,color="#F7000B") +
+    scale_x_log10()+
+
+  # geom_smooth(aes(x=chr_row_num,y=num),color="#F7000B") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  filter(chr_row_num<200) %>%
+  ggplot() +
+  geom_jitter(aes(x=chr_row_num,y=views), size=0.25, alpha=0.7,width = 0.03) +
+  scale_y_continuous(labels = comma)+
+  scale_x_log10()+
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  group_by(pattern_num) %>%
+  mutate(num=n()) %>%
+  ggplot()+
+  geom_line(aes(x=pattern_num,y=num),size=1,color="#F7000B") +
+  geom_smooth(aes(x=pattern_num,y=num), color="#F7000B", method = "loess") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  ggplot() +
+  geom_jitter(aes(x=pattern_num,y=views), size=0.25, alpha=0.7) +
+  scale_y_continuous(labels = comma)+
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  group_by(chr_length) %>%
+  mutate(num=n()) %>%
+  ggplot()+
+  geom_line(aes(x=chr_length,y=num))  +
+  geom_smooth(aes(x=chr_length,y=num), color="#F7000B", size=1.5)  +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+
+```{r}
+USvideos_NNA %>%
+  ggplot() +
+  geom_jitter(aes(x=chr_length,y=views), size=0.25,alpha=0.7) +
+  scale_y_continuous(labels = comma)+
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  group_by(chr_upper_num) %>%
+  mutate(num=n()) %>%
+  ggplot()+
+  geom_line(aes(x=chr_upper_num,y=num),color="#F7000B",size=1) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+USvideos_NNA %>%
+  ggplot() +
+  geom_jitter(aes(x=chr_upper_num,y=views), size=0.25, alpha=0.7) +
+  scale_y_continuous(labels = comma)+
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+
+```{r}
+USvideos_NNA %>%
+  ggplot()+
+  geom_jitter(aes(x=likes_rate, y= views),size=0.25, alpha=0.5, width = 0.05)+
+  scale_y_continuous(labels = comma)+
+
+  scale_x_log10(labels = comma) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+new_word <- str_to_lower(USvideos_NNA$title)
+new_word <- str_split(new_word, "[^a-z]")
+words <- unlist(new_word)
+# words <- case_when(words == "br" ~ "bedroom",
+#                    words == "apt" ~ "apartment",
+#                    TRUE ~ words)
+words <- as.data.frame(words)
+words
+```
+
